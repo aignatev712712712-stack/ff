@@ -52,7 +52,11 @@ def _load_last_position():
         return None
     try:
         data = json.loads(LAST_POS_FILE.read_text(encoding="utf-8"))
-        return int(data.get("x")), int(data.get("y"))
+        x = data.get("x")
+        y = data.get("y")
+        if x is None or y is None:
+            return None
+        return int(x), int(y)
     except Exception:
         return None
 
