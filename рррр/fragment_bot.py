@@ -91,11 +91,23 @@ async def _wait_for_fragment_success(page, username: str, stars: int):
         "transaction",
     ]
 
-    confirmation_deadline = time.monotonic() + max(MIN_FRAGMENT_TIMEOUT, FRAGMENT_ORDER_TIMEOUT)
+    confirmation_timeout = None
+    if FRAGMENT_ORDER_TIMEOUT > 0:
+        confirmation_timeout = max(MIN_FRAGMENT_TIMEOUT, FRAGMENT_ORDER_TIMEOUT)
+    confirmation_deadline = (
+        time.monotonic() + confirmation_timeout if confirmation_timeout else None
+    )
     next_confirm_at = 0.0
     last_confirm_error = None
 
-    while time.monotonic() < confirmation_deadline:
+    if confirmation_deadline is None:
+        logger.info("[Fragment] waiting for Tonkeeper confirmation without timeout")
+
+    while True:
+        if confirmation_deadline and time.monotonic() >= confirmation_deadline:
+            break
+        if page.is_closed():
+            return {"ok": False, "error": "Страница Fragment закрыта до подтверждения Tonkeeper"}
         if TONKEEPER_AUTO_CONFIRM and time.monotonic() >= next_confirm_at:
             next_confirm_at = time.monotonic() + TONKEEPER_CONFIRM_INTERVAL
             confirm_result = _try_confirm_tonkeeper()

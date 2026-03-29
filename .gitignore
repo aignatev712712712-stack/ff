@@ -143,6 +143,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+рррр/tonkeeper_confirm_last.json
 
 # Spyder project settings
 .spyderproject

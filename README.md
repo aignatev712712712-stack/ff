@@ -13,8 +13,13 @@
    - `ADMIN_IDS` — ID админов через запятую (опционально)
    - `YOOKASSA_SHOP_ID`, `YOOKASSA_SECRET_KEY` — для оплаты картой и пополнений (опционально)
    - `FRAGMENT_AUTO_DELIVERY=1` — включить авто-выдачу (по умолчанию включено)
-   - `FRAGMENT_ORDER_TIMEOUT=180` — сколько ждать подтверждения покупки в Fragment (секунды, минимум 5)
+   - `FRAGMENT_ORDER_TIMEOUT=180` — сколько ждать подтверждения покупки в Fragment (секунды, минимум 5). `0` — ждать без таймаута.
    - `TONKEEPER_AUTO_CONFIRM=1` — автоклик подтверждения Tonkeeper (по умолчанию включено)
+   - `TONKEEPER_CONFIRM_TEMPLATES` — список шаблонов кнопки подтверждения (через запятую), по умолчанию `рррр/confirm_button.png`
+   - `TONKEEPER_CONFIRM_POSITION` — запасной клик по координатам `x,y` (если шаблон не найден)
+   - `TONKEEPER_CONFIRM_REGION` — ограничить поиск кнопки областью экрана `x,y,w,h`
+   - `TONKEEPER_CONFIRM_CONFIDENCE=0.85` — точность сравнения шаблона
+   - `SINGLE_ACTIVE_ORDER=1` — не принимать новые заказы, пока есть очередь/обработка
 3. Для авто-выдачи один раз авторизуйтесь в Fragment:
    ```bash
    python рррр/fragment_login.py
@@ -27,5 +32,11 @@
    ```bash
    python рррр/queue_worker.py
    ```
+
+## Автоподтверждение Tonkeeper Pro
+
+1. Сделайте скриншот кнопки **Confirm** в Tonkeeper Pro и сохраните его как `рррр/confirm_button.png`.
+2. Если кнопка отличается по теме/языку, укажите собственный путь через `TONKEEPER_CONFIRM_TEMPLATES`.
+3. Если удобнее использовать фиксированную точку, задайте `TONKEEPER_CONFIRM_POSITION=x,y`.
 
 Если ЮKassa не настроена, оплата картой и пополнение баланса будут отключены, но бот запустится.
