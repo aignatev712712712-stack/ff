@@ -57,6 +57,19 @@ def init_database():
     ''')
 
     cursor.execute('''
+    CREATE TABLE IF NOT EXISTS delivery_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        purchase_id INTEGER UNIQUE,
+        status TEXT DEFAULT 'queued',
+        attempts INTEGER DEFAULT 0,
+        last_error TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP,
+        FOREIGN KEY (purchase_id) REFERENCES purchases (id)
+    )
+    ''')
+
+    cursor.execute('''
     CREATE TABLE IF NOT EXISTS config (
         key TEXT PRIMARY KEY,
         value TEXT
@@ -157,3 +170,53 @@ def try_lock_purchase(purchase_id: int, expected_status: str, new_status: str, c
         )
     conn.commit()
     return cursor.rowcount > 0
+
+def add_delivery_to_queue(purchase_id: int):
+    cursor.execute(
+        '''INSERT OR IGNORE INTO delivery_queue (purchase_id, status, created_at, updated_at)
+           VALUES (?, 'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)''',
+        (purchase_id,)
+    )
+    conn.commit()
+    if cursor.lastrowid:
+        return cursor.lastrowid
+    cursor.execute('SELECT id FROM delivery_queue WHERE purchase_id = ?', (purchase_id,))
+    row = cursor.fetchone()
+    return row['id'] if row else None
+
+def try_lock_delivery(queue_id: int, expected_status: str, new_status: str, last_error: str = None) -> bool:
+    cursor.execute(
+        'UPDATE delivery_queue SET status = ?, last_error = ?, updated_at = ? WHERE id = ? AND status = ?',
+        (new_status, last_error, datetime.now().isoformat(), queue_id, expected_status)
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+def get_next_queued_delivery():
+    cursor.execute(
+        '''SELECT id, purchase_id, attempts
+           FROM delivery_queue
+           WHERE status = 'queued'
+           ORDER BY created_at ASC
+           LIMIT 1'''
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    if not try_lock_delivery(row['id'], 'queued', 'processing'):
+        return None
+    return row
+
+def increment_delivery_attempt(queue_id: int, note: str = None):
+    cursor.execute(
+        'UPDATE delivery_queue SET attempts = attempts + 1, last_error = ?, updated_at = ? WHERE id = ?',
+        (note, datetime.now().isoformat(), queue_id)
+    )
+    conn.commit()
+
+def set_delivery_status(queue_id: int, status: str, error: str = None):
+    cursor.execute(
+        'UPDATE delivery_queue SET status = ?, last_error = ?, updated_at = ? WHERE id = ?',
+        (status, error, datetime.now().isoformat(), queue_id)
+    )
+    conn.commit()
