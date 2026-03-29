@@ -10,7 +10,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
-from config import ADMIN_IDS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, FRAGMENT_AUTO_DELIVERY
+from config import ADMIN_IDS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, YOOKASSA_ENABLED, FRAGMENT_AUTO_DELIVERY
 from database import (
     cursor, conn, get_user_balance, update_user_balance, add_purchase,
     get_purchase, update_purchase_status, try_lock_purchase, format_price,
@@ -184,24 +184,75 @@ async def buy_with_balance(callback: CallbackQuery, state: FSMContext):
         return
 
     update_user_balance(user_id, -cost_kopecks)
-    purchase_id = add_purchase(user_id, stars, cost_kopecks, 'balance', 'completed')
+    purchase_id = add_purchase(user_id, stars, cost_kopecks, 'balance', 'paid')
     await check_referral_bonus(callback.bot, user_id, cost_kopecks)
 
-    await callback.message.edit_text(
-        f"✅ Покупка завершена!\n\n"
-        f"🛒 Заказ #{purchase_id}\n"
-        f"⭐️ {stars} звёзд\n"
-        f"💰 Стоимость: {format_price(cost_kopecks)} руб.\n\n"
-        f"Звёзды будут выданы администратором в ближайшее время.",
-        parse_mode="HTML"
-    )
+    fragment_done = False
+    fragment_error = None
 
-    for admin_id in ADMIN_IDS:
-        await callback.bot.send_message(
-            admin_id,
-            f"💸 Покупка с баланса\nЗаказ #{purchase_id}\nПользователь: {_safe_user_tag(callback.from_user)}\n⭐️ {stars} звёзд\n💰 {format_price(cost_kopecks)} руб.",
+    if FRAGMENT_AUTO_DELIVERY:
+        cursor.execute('SELECT username FROM users WHERE user_id = ?', (user_id,))
+        urow = cursor.fetchone()
+        username = urow[0] if urow else None
+
+        if username:
+            try:
+                fragment_result = await deliver_stars_to_user(username=username, stars=stars)
+                fragment_done = bool(fragment_result.get("ok"))
+                if not fragment_done:
+                    fragment_error = fragment_result.get("error", "unknown error")
+            except Exception as e:
+                fragment_error = str(e)
+        else:
+            fragment_error = "У пользователя нет @username"
+
+    if fragment_done:
+        update_purchase_status(purchase_id, 'completed', datetime.now())
+        await callback.message.edit_text(
+            f"✅ Покупка завершена!\n\n"
+            f"🛒 Заказ #{purchase_id}\n"
+            f"⭐️ {stars} звёзд\n"
+            f"💰 Стоимость: {format_price(cost_kopecks)} руб.\n\n"
+            f"🎉 Звёзды отправлены автоматически.",
             parse_mode="HTML"
         )
+    else:
+        if not fragment_error and not FRAGMENT_AUTO_DELIVERY:
+            fragment_error = "Автовыдача отключена"
+
+        await callback.message.edit_text(
+            f"✅ Покупка завершена!\n\n"
+            f"🛒 Заказ #{purchase_id}\n"
+            f"⭐️ {stars} звёзд\n"
+            f"💰 Стоимость: {format_price(cost_kopecks)} руб.\n\n"
+            f"⚠️ Автовыдача не выполнена, заказ передан админу.",
+            parse_mode="HTML"
+        )
+
+        admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Звёзды выданы", callback_data=f"complete_order_{purchase_id}")
+        ]])
+
+        admin_message = (
+            f"💸 Покупка с баланса\n\n"
+            f"🛒 Заказ #{purchase_id}\n"
+            f"👤 Покупатель: {_safe_user_tag(callback.from_user)}\n"
+            f"🆔 ID: {user_id}\n"
+            f"⭐️ Количество: {stars} звёзд\n"
+            f"💰 Сумма: {format_price(cost_kopecks)} руб.\n"
+            f"📅 Время: {datetime.now().strftime('%H:%M %d.%m.%Y')}\n\n"
+            f"⚠️ Автовыдача не сработала.\n"
+            f"Причина: {fragment_error or 'unknown'}\n\n"
+            f"Выдайте пользователю {stars} звёзд, затем нажмите кнопку."
+        )
+
+        for admin_id in ADMIN_IDS:
+            await callback.bot.send_message(
+                admin_id,
+                admin_message,
+                reply_markup=admin_keyboard,
+                parse_mode="HTML"
+            )
 
     await state.clear()
     await asyncio.sleep(1)
@@ -220,6 +271,11 @@ async def pay_with_card(callback: CallbackQuery, state: FSMContext):
         return
 
     user_id = callback.from_user.id
+
+    if not YOOKASSA_ENABLED:
+        await callback.message.answer("❌ Оплата картой недоступна. Настройте ЮKassa в .env.")
+        await state.clear()
+        return
 
     purchase_id = add_purchase(user_id, stars, cost_kopecks, 'yookassa', 'creating_payment')
     cursor.execute('SELECT order_id FROM purchases WHERE id = ?', (purchase_id,))
@@ -295,6 +351,10 @@ async def pay_with_card(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("check_payment_"))
 async def check_payment(callback: CallbackQuery):
     await callback.answer()
+
+    if not YOOKASSA_ENABLED:
+        await callback.message.answer("❌ Проверка оплаты недоступна. Настройте ЮKassa в .env.")
+        return
 
     try:
         purchase_id = int(callback.data.split('_')[2])
@@ -965,6 +1025,14 @@ async def topup_custom_amount(message: Message, state: FSMContext):
 
 
 async def create_topup_payment(bot: Bot, user_id: int, username: str, chat_id: int, message_id: int, amount_rub: int):
+    if not YOOKASSA_ENABLED:
+        await bot.edit_message_text(
+            "❌ Пополнение недоступно. Настройте ЮKassa в .env.",
+            chat_id=chat_id,
+            message_id=message_id
+        )
+        return
+
     amount_kopecks = amount_rub * 100
     purchase_id = add_purchase(user_id, 0, amount_kopecks, 'topup', 'creating_payment')
     cursor.execute('SELECT order_id FROM purchases WHERE id = ?', (purchase_id,))
@@ -1045,6 +1113,10 @@ async def create_topup_payment(bot: Bot, user_id: int, username: str, chat_id: i
 async def check_topup(callback: CallbackQuery):
     await callback.answer()
 
+    if not YOOKASSA_ENABLED:
+        await callback.message.answer("❌ Пополнение недоступно. Настройте ЮKassa в .env.")
+        return
+
     try:
         purchase_id = int(callback.data.split('_')[2])
     except (IndexError, ValueError):
@@ -1098,77 +1170,25 @@ async def check_topup(callback: CallbackQuery):
 
                 current_status = row[0]
                 if current_status == 'completed':
-                    await callback.message.answer("✅ Звёзды уже выданы")
+                    await callback.message.answer("Баланс уже пополнен")
                     return
-                if current_status != 'waiting_payment':
+                if current_status not in ('waiting_payment', 'paid'):
                     await callback.message.answer("Статус заказа некорректен")
                     return
 
-                update_purchase_status(purchase_id, 'paid', datetime.now())
+                locked = try_lock_purchase(purchase_id, current_status, 'completed', datetime.now())
+                if not locked:
+                    await callback.message.answer("Баланс уже пополнен")
+                    return
 
-                fragment_done = False
-                fragment_error = None
-
-                if FRAGMENT_AUTO_DELIVERY:
-                    cursor.execute('SELECT username FROM users WHERE user_id = ?', (user_id,))
-                    urow = cursor.fetchone()
-                    username = urow[0] if urow else None
-
-                    if username:
-                        try:
-                            fragment_result = await deliver_stars_to_user(username=username, stars=stars)
-                            fragment_done = bool(fragment_result.get("ok"))
-                            if not fragment_done:
-                                fragment_error = fragment_result.get("error", "unknown error")
-                        except Exception as e:
-                            fragment_error = str(e)
-                    else:
-                        fragment_error = "У пользователя нет @username"
-
-                if fragment_done:
-                    update_purchase_status(purchase_id, 'completed', datetime.now())
-                    await callback.message.edit_text(
-                        f"✅ Оплата подтверждена!\n\n"
-                        f"🛒 Заказ #{purchase_id}\n"
-                        f"⭐️ {stars} звёзд\n"
-                        f"💰 {format_price(amount_kopecks)} руб.\n\n"
-                        f"🎉 Звёзды отправлены автоматически.",
-                        parse_mode="HTML"
-                    )
-                else:
-                    await callback.message.edit_text(
-                        f"✅ Оплата подтверждена!\n\n"
-                        f"🛒 Заказ #{purchase_id}\n"
-                        f"⭐️ {stars} звёзд\n"
-                        f"💰 {format_price(amount_kopecks)} руб.\n\n"
-                        f"⚠️ Автовыдача не выполнена, заказ передан админу.",
-                        parse_mode="HTML"
-                    )
-
-                    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="✅ Звёзды выданы", callback_data=f"complete_order_{purchase_id}")
-                    ]])
-
-                    admin_message = (
-                        f"💳 НОВАЯ ОПЛАТА ЧЕРЕЗ ЮKASSA\n\n"
-                        f"🛒 Заказ #{purchase_id}\n"
-                        f"👤 Покупатель: {_safe_user_tag(callback.from_user)}\n"
-                        f"🆔 ID: {user_id}\n"
-                        f"⭐️ Количество: {stars} звёзд\n"
-                        f"💰 Сумма: {format_price(amount_kopecks)} руб.\n"
-                        f"📅 Время: {datetime.now().strftime('%H:%M %d.%m.%Y')}\n\n"
-                        f"⚠️ Автовыдача не сработала.\n"
-                        f"Причина: {fragment_error or 'unknown'}\n\n"
-                        f"Выдайте пользователю {stars} звёзд, затем нажмите кнопку."
-                    )
-
-                    for admin_id in ADMIN_IDS:
-                        await callback.bot.send_message(
-                            admin_id,
-                            admin_message,
-                            reply_markup=admin_keyboard,
-                            parse_mode="HTML"
-                        )
+                update_user_balance(user_id, amount_kopecks)
+                await callback.message.edit_text(
+                    f"✅ Баланс пополнен!\n\n"
+                    f"🛒 Заказ #{purchase_id}\n"
+                    f"💰 Сумма: {format_price(amount_kopecks)} руб.\n\n"
+                    f"Ваш баланс успешно пополнен.",
+                    parse_mode="HTML"
+                )
 
     except Exception:
         logger.exception("Ошибка проверки платежа")
@@ -1714,6 +1734,14 @@ async def topup_custom_amount(message: Message, state: FSMContext):
 
 
 async def create_topup_payment(bot: Bot, user_id: int, username: str, chat_id: int, message_id: int, amount_rub: int):
+    if not YOOKASSA_ENABLED:
+        await bot.edit_message_text(
+            "❌ Пополнение недоступно. Настройте ЮKassa в .env.",
+            chat_id=chat_id,
+            message_id=message_id
+        )
+        return
+
     amount_kopecks = amount_rub * 100
     purchase_id = add_purchase(user_id, 0, amount_kopecks, 'topup', 'creating_payment')
     cursor.execute('SELECT order_id FROM purchases WHERE id = ?', (purchase_id,))
@@ -1794,6 +1822,10 @@ async def create_topup_payment(bot: Bot, user_id: int, username: str, chat_id: i
 async def check_topup(callback: CallbackQuery):
     await callback.answer()
 
+    if not YOOKASSA_ENABLED:
+        await callback.message.answer("❌ Пополнение недоступно. Настройте ЮKassa в .env.")
+        return
+
     try:
         purchase_id = int(callback.data.split('_')[2])
     except (IndexError, ValueError):
@@ -1847,77 +1879,25 @@ async def check_topup(callback: CallbackQuery):
 
                 current_status = row[0]
                 if current_status == 'completed':
-                    await callback.message.answer("✅ Звёзды уже выданы")
+                    await callback.message.answer("Баланс уже пополнен")
                     return
-                if current_status != 'waiting_payment':
+                if current_status not in ('waiting_payment', 'paid'):
                     await callback.message.answer("Статус заказа некорректен")
                     return
 
-                update_purchase_status(purchase_id, 'paid', datetime.now())
+                locked = try_lock_purchase(purchase_id, current_status, 'completed', datetime.now())
+                if not locked:
+                    await callback.message.answer("Баланс уже пополнен")
+                    return
 
-                fragment_done = False
-                fragment_error = None
-
-                if FRAGMENT_AUTO_DELIVERY:
-                    cursor.execute('SELECT username FROM users WHERE user_id = ?', (user_id,))
-                    urow = cursor.fetchone()
-                    username = urow[0] if urow else None
-
-                    if username:
-                        try:
-                            fragment_result = await deliver_stars_to_user(username=username, stars=stars)
-                            fragment_done = bool(fragment_result.get("ok"))
-                            if not fragment_done:
-                                fragment_error = fragment_result.get("error", "unknown error")
-                        except Exception as e:
-                            fragment_error = str(e)
-                    else:
-                        fragment_error = "У пользователя нет @username"
-
-                if fragment_done:
-                    update_purchase_status(purchase_id, 'completed', datetime.now())
-                    await callback.message.edit_text(
-                        f"✅ Оплата подтверждена!\n\n"
-                        f"🛒 Заказ #{purchase_id}\n"
-                        f"⭐️ {stars} звёзд\n"
-                        f"💰 {format_price(amount_kopecks)} руб.\n\n"
-                        f"🎉 Звёзды отправлены автоматически.",
-                        parse_mode="HTML"
-                    )
-                else:
-                    await callback.message.edit_text(
-                        f"✅ Оплата подтверждена!\n\n"
-                        f"🛒 Заказ #{purchase_id}\n"
-                        f"⭐️ {stars} звёзд\n"
-                        f"💰 {format_price(amount_kopecks)} руб.\n\n"
-                        f"⚠️ Автовыдача не выполнена, заказ передан админу.",
-                        parse_mode="HTML"
-                    )
-
-                    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="✅ Звёзды выданы", callback_data=f"complete_order_{purchase_id}")
-                    ]])
-
-                    admin_message = (
-                        f"💳 НОВАЯ ОПЛАТА ЧЕРЕЗ ЮKASSA\n\n"
-                        f"🛒 Заказ #{purchase_id}\n"
-                        f"👤 Покупатель: {_safe_user_tag(callback.from_user)}\n"
-                        f"🆔 ID: {user_id}\n"
-                        f"⭐️ Количество: {stars} звёзд\n"
-                        f"💰 Сумма: {format_price(amount_kopecks)} руб.\n"
-                        f"📅 Время: {datetime.now().strftime('%H:%M %d.%m.%Y')}\n\n"
-                        f"⚠️ Автовыдача не сработала.\n"
-                        f"Причина: {fragment_error or 'unknown'}\n\n"
-                        f"Выдайте пользователю {stars} звёзд, затем нажмите кнопку."
-                    )
-
-                    for admin_id in ADMIN_IDS:
-                        await callback.bot.send_message(
-                            admin_id,
-                            admin_message,
-                            reply_markup=admin_keyboard,
-                            parse_mode="HTML"
-                        )
+                update_user_balance(user_id, amount_kopecks)
+                await callback.message.edit_text(
+                    f"✅ Баланс пополнен!\n\n"
+                    f"🛒 Заказ #{purchase_id}\n"
+                    f"💰 Сумма: {format_price(amount_kopecks)} руб.\n\n"
+                    f"Ваш баланс успешно пополнен.",
+                    parse_mode="HTML"
+                )
 
     except Exception:
         logger.exception("Ошибка проверки платежа")
