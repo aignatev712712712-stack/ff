@@ -9,6 +9,15 @@ from config import FRAGMENT_STATE_PATH, FRAGMENT_ORDER_TIMEOUT, TONKEEPER_AUTO_C
 MIN_FRAGMENT_TIMEOUT = 5
 TONKEEPER_CONFIRM_INTERVAL = 5
 
+try:
+    from tonkeeper_confirm import confirm_tonkeeper_click
+    TONKEEPER_CONFIRM_AVAILABLE = True
+    TONKEEPER_CONFIRM_IMPORT_ERROR = None
+except Exception as e:
+    confirm_tonkeeper_click = None
+    TONKEEPER_CONFIRM_AVAILABLE = False
+    TONKEEPER_CONFIRM_IMPORT_ERROR = str(e)
+
 logger = logging.getLogger(__name__)
 
 async def _dump_state(page, label: str):
@@ -56,10 +65,8 @@ async def _try_select_radio_like(page, candidates):
     return None
 
 def _try_confirm_tonkeeper():
-    try:
-        from tonkeeper_confirm import confirm_tonkeeper_click
-    except Exception as e:
-        return {"ok": False, "error": f"Tonkeeper import failed: {e}"}
+    if not TONKEEPER_CONFIRM_AVAILABLE or confirm_tonkeeper_click is None:
+        return {"ok": False, "error": f"Tonkeeper import failed: {TONKEEPER_CONFIRM_IMPORT_ERROR}"}
 
     try:
         return confirm_tonkeeper_click()
@@ -80,11 +87,11 @@ async def _wait_for_fragment_success(page, username: str, stars: int):
         "transaction",
     ]
 
-    deadline = time.monotonic() + max(MIN_FRAGMENT_TIMEOUT, FRAGMENT_ORDER_TIMEOUT)
+    confirmation_deadline = time.monotonic() + max(MIN_FRAGMENT_TIMEOUT, FRAGMENT_ORDER_TIMEOUT)
     next_confirm_at = 0.0
     last_confirm_error = None
 
-    while time.monotonic() < deadline:
+    while time.monotonic() < confirmation_deadline:
         if TONKEEPER_AUTO_CONFIRM and time.monotonic() >= next_confirm_at:
             next_confirm_at = time.monotonic() + TONKEEPER_CONFIRM_INTERVAL
             confirm_result = _try_confirm_tonkeeper()
