@@ -4,6 +4,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 API_TOKEN = (os.getenv("API_TOKEN") or "").strip()
@@ -11,7 +13,6 @@ if not API_TOKEN:
     raise ValueError("API_TOKEN не задан в .env")
 
 ADMIN_IDS_STR = (os.getenv("ADMIN_IDS") or "").strip()
-logger = logging.getLogger(__name__)
 if not ADMIN_IDS_STR:
     logger.warning("ADMIN_IDS не задан в .env. Админ-панель будет недоступна.")
     ADMIN_IDS = []

@@ -217,7 +217,7 @@ async def buy_with_balance(callback: CallbackQuery, state: FSMContext):
             parse_mode="HTML"
         )
     else:
-        if not fragment_error:
+        if not fragment_error and not FRAGMENT_AUTO_DELIVERY:
             fragment_error = "Автовыдача отключена"
 
         await callback.message.edit_text(
@@ -1176,9 +1176,7 @@ async def check_topup(callback: CallbackQuery):
                     await callback.message.answer("Статус заказа некорректен")
                     return
 
-                locked = try_lock_purchase(purchase_id, 'waiting_payment', 'completed', datetime.now())
-                if not locked:
-                    locked = try_lock_purchase(purchase_id, 'paid', 'completed', datetime.now())
+                locked = try_lock_purchase(purchase_id, current_status, 'completed', datetime.now())
                 if not locked:
                     await callback.message.answer("Баланс уже пополнен")
                     return
@@ -1887,9 +1885,7 @@ async def check_topup(callback: CallbackQuery):
                     await callback.message.answer("Статус заказа некорректен")
                     return
 
-                locked = try_lock_purchase(purchase_id, 'waiting_payment', 'completed', datetime.now())
-                if not locked:
-                    locked = try_lock_purchase(purchase_id, 'paid', 'completed', datetime.now())
+                locked = try_lock_purchase(purchase_id, current_status, 'completed', datetime.now())
                 if not locked:
                     await callback.message.answer("Баланс уже пополнен")
                     return
