@@ -13,10 +13,14 @@ try:
     from tonkeeper_confirm import confirm_tonkeeper_click
     TONKEEPER_CONFIRM_AVAILABLE = True
     TONKEEPER_CONFIRM_IMPORT_ERROR = None
+except ImportError as e:
+    confirm_tonkeeper_click = None
+    TONKEEPER_CONFIRM_AVAILABLE = False
+    TONKEEPER_CONFIRM_IMPORT_ERROR = f"ImportError: {e}"
 except Exception as e:
     confirm_tonkeeper_click = None
     TONKEEPER_CONFIRM_AVAILABLE = False
-    TONKEEPER_CONFIRM_IMPORT_ERROR = str(e)
+    TONKEEPER_CONFIRM_IMPORT_ERROR = f"Tonkeeper import failed: {e}"
 
 logger = logging.getLogger(__name__)
 

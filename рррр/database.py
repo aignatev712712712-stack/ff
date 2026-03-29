@@ -174,7 +174,7 @@ def try_lock_purchase(purchase_id: int, expected_status: str, new_status: str, c
 def add_delivery_to_queue(purchase_id: int):
     cursor.execute(
         '''INSERT OR IGNORE INTO delivery_queue (purchase_id, status, created_at, updated_at)
-           VALUES (?, 'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)''',
+        VALUES (?, 'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)''',
         (purchase_id,)
     )
     conn.commit()
@@ -195,10 +195,10 @@ def try_lock_delivery(queue_id: int, expected_status: str, new_status: str, last
 def get_next_queued_delivery():
     cursor.execute(
         '''SELECT id, purchase_id, attempts
-           FROM delivery_queue
-           WHERE status = 'queued'
-           ORDER BY created_at ASC
-           LIMIT 1'''
+        FROM delivery_queue
+        WHERE status = 'queued'
+        ORDER BY created_at ASC
+        LIMIT 1'''
     )
     row = cursor.fetchone()
     if not row:

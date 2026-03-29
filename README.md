@@ -13,7 +13,7 @@
    - `ADMIN_IDS` — ID админов через запятую (опционально)
    - `YOOKASSA_SHOP_ID`, `YOOKASSA_SECRET_KEY` — для оплаты картой и пополнений (опционально)
    - `FRAGMENT_AUTO_DELIVERY=1` — включить авто-выдачу (по умолчанию включено)
-   - `FRAGMENT_ORDER_TIMEOUT=180` — сколько ждать подтверждения покупки в Fragment (секунды)
+   - `FRAGMENT_ORDER_TIMEOUT=180` — сколько ждать подтверждения покупки в Fragment (секунды, минимум 5)
    - `TONKEEPER_AUTO_CONFIRM=1` — автоклик подтверждения Tonkeeper (по умолчанию включено)
 3. Для авто-выдачи один раз авторизуйтесь в Fragment:
    ```bash
