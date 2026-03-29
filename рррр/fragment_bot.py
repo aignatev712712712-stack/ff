@@ -6,6 +6,9 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 
 from config import FRAGMENT_STATE_PATH, FRAGMENT_ORDER_TIMEOUT, TONKEEPER_AUTO_CONFIRM
 
+MIN_FRAGMENT_TIMEOUT = 5
+TONKEEPER_CONFIRM_INTERVAL = 5
+
 logger = logging.getLogger(__name__)
 
 async def _dump_state(page, label: str):
@@ -56,12 +59,12 @@ def _try_confirm_tonkeeper():
     try:
         from tonkeeper_confirm import confirm_tonkeeper_click
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": f"Tonkeeper import failed: {e}"}
 
     try:
         return confirm_tonkeeper_click()
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": f"Tonkeeper confirm failed: {e}"}
 
 async def _wait_for_fragment_success(page, username: str, stars: int):
     success_markers = [
@@ -77,13 +80,13 @@ async def _wait_for_fragment_success(page, username: str, stars: int):
         "transaction",
     ]
 
-    deadline = time.monotonic() + max(5, FRAGMENT_ORDER_TIMEOUT)
+    deadline = time.monotonic() + max(MIN_FRAGMENT_TIMEOUT, FRAGMENT_ORDER_TIMEOUT)
     next_confirm_at = 0.0
     last_confirm_error = None
 
     while time.monotonic() < deadline:
         if TONKEEPER_AUTO_CONFIRM and time.monotonic() >= next_confirm_at:
-            next_confirm_at = time.monotonic() + 5
+            next_confirm_at = time.monotonic() + TONKEEPER_CONFIRM_INTERVAL
             confirm_result = _try_confirm_tonkeeper()
             if confirm_result.get("ok"):
                 logger.info(f"[Tonkeeper] confirm clicked ({confirm_result.get('method')})")
