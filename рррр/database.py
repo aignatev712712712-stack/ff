@@ -220,3 +220,9 @@ def set_delivery_status(queue_id: int, status: str, error: str = None):
         (status, error, datetime.now().isoformat(), queue_id)
     )
     conn.commit()
+
+def has_active_delivery() -> bool:
+    cursor.execute(
+        "SELECT 1 FROM delivery_queue WHERE status IN ('queued', 'processing') LIMIT 1"
+    )
+    return cursor.fetchone() is not None

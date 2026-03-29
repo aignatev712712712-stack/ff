@@ -3,6 +3,7 @@ import uuid
 import logging
 from datetime import datetime
 from decimal import Decimal
+from typing import Optional
 
 import aiohttp
 from aiogram import Router, F, Bot
@@ -10,12 +11,19 @@ from aiogram.filters import Command, StateFilter
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
-from config import ADMIN_IDS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, YOOKASSA_ENABLED, FRAGMENT_AUTO_DELIVERY
+from config import (
+    ADMIN_IDS,
+    YOOKASSA_SHOP_ID,
+    YOOKASSA_SECRET_KEY,
+    YOOKASSA_ENABLED,
+    FRAGMENT_AUTO_DELIVERY,
+    SINGLE_ACTIVE_ORDER
+)
 from database import (
     cursor, conn, get_user_balance, update_user_balance, add_purchase,
     get_purchase, update_purchase_status, try_lock_purchase, format_price,
     get_price_per_star, calc_stars_cost, set_price_per_star,
-    add_delivery_to_queue
+    add_delivery_to_queue, has_active_delivery
 )
 from keyboards import (
     main_menu_keyboard, back_button, topup_amount_keyboard,
@@ -31,6 +39,22 @@ logger = logging.getLogger(__name__)
 TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 BOT_USERNAME = None
+
+def _orders_locked() -> bool:
+    return SINGLE_ACTIVE_ORDER and has_active_delivery()
+
+async def _notify_orders_locked(target, state: Optional[FSMContext] = None):
+    text = (
+        "⏳ Сейчас подтверждается предыдущий заказ в Tonkeeper.\n"
+        "Новые заказы временно не принимаются. Попробуйте позже."
+    )
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, parse_mode="HTML")
+    if state:
+        await state.clear()
 
 
 def _safe_user_tag(user) -> str:
@@ -90,6 +114,9 @@ async def cmd_start(message: Message):
 
 @router.callback_query(F.data == "buy_stars")
 async def buy_stars_start(callback: CallbackQuery, state: FSMContext):
+    if _orders_locked():
+        await _notify_orders_locked(callback, state)
+        return
     price = get_price_per_star()
     balance = get_user_balance(callback.from_user.id)
     max_stars = int(balance / (price * 100)) if price > 0 else 0
@@ -169,6 +196,9 @@ async def buy_stars_enter(message: Message, state: FSMContext):
 
 @router.callback_query(StateFilter(BuyStarsState.waiting_for_confirmation), F.data == "buy_with_balance")
 async def buy_with_balance(callback: CallbackQuery, state: FSMContext):
+    if _orders_locked():
+        await _notify_orders_locked(callback, state)
+        return
     data = await state.get_data()
     stars = data.get('stars')
     cost_kopecks = data.get('cost_kopecks')
@@ -259,6 +289,9 @@ async def buy_with_balance(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(StateFilter(BuyStarsState.waiting_for_confirmation), F.data == "pay_with_card")
 async def pay_with_card(callback: CallbackQuery, state: FSMContext):
+    if _orders_locked():
+        await _notify_orders_locked(callback, state)
+        return
     data = await state.get_data()
     stars = data.get('stars')
     cost_kopecks = data.get('cost_kopecks')
