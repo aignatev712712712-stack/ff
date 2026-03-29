@@ -1,9 +1,26 @@
 import logging
+import time
 from pathlib import Path
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
-from config import FRAGMENT_STATE_PATH
+from config import FRAGMENT_STATE_PATH, FRAGMENT_ORDER_TIMEOUT, TONKEEPER_AUTO_CONFIRM
+
+MIN_FRAGMENT_TIMEOUT = 5
+TONKEEPER_CONFIRM_INTERVAL = 5
+
+try:
+    from tonkeeper_confirm import confirm_tonkeeper_click
+    TONKEEPER_CONFIRM_AVAILABLE = True
+    TONKEEPER_CONFIRM_IMPORT_ERROR = None
+except ImportError as e:
+    confirm_tonkeeper_click = None
+    TONKEEPER_CONFIRM_AVAILABLE = False
+    TONKEEPER_CONFIRM_IMPORT_ERROR = f"ImportError: {e}"
+except Exception as e:
+    confirm_tonkeeper_click = None
+    TONKEEPER_CONFIRM_AVAILABLE = False
+    TONKEEPER_CONFIRM_IMPORT_ERROR = f"Tonkeeper import failed: {e}"
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +67,61 @@ async def _try_select_radio_like(page, candidates):
         except Exception as e:
             logger.info(f"[Fragment] cannot select package '{text}': {e}")
     return None
+
+def _try_confirm_tonkeeper():
+    if not TONKEEPER_CONFIRM_AVAILABLE or confirm_tonkeeper_click is None:
+        return {"ok": False, "error": f"Tonkeeper import failed: {TONKEEPER_CONFIRM_IMPORT_ERROR}"}
+
+    try:
+        return confirm_tonkeeper_click()
+    except Exception as e:
+        return {"ok": False, "error": f"Tonkeeper confirm failed: {e}"}
+
+async def _wait_for_fragment_success(page, username: str, stars: int):
+    success_markers = [
+        "success",
+        "completed",
+        "purchased",
+        "done",
+        "успешно",
+        "оплачено",
+        "завершено",
+        "sent a gift",
+        "gift for",
+        "transaction",
+    ]
+
+    confirmation_deadline = time.monotonic() + max(MIN_FRAGMENT_TIMEOUT, FRAGMENT_ORDER_TIMEOUT)
+    next_confirm_at = 0.0
+    last_confirm_error = None
+
+    while time.monotonic() < confirmation_deadline:
+        if TONKEEPER_AUTO_CONFIRM and time.monotonic() >= next_confirm_at:
+            next_confirm_at = time.monotonic() + TONKEEPER_CONFIRM_INTERVAL
+            confirm_result = _try_confirm_tonkeeper()
+            if confirm_result.get("ok"):
+                logger.info(f"[Tonkeeper] confirm clicked ({confirm_result.get('method')})")
+                last_confirm_error = None
+            else:
+                last_confirm_error = confirm_result.get("error")
+                logger.info(f"[Tonkeeper] confirm not clicked: {last_confirm_error}")
+
+        page_text = ""
+        try:
+            page_text = await page.locator("body").inner_text(timeout=5000)
+        except Exception:
+            pass
+
+        if any(m in page_text.lower() for m in success_markers):
+            await page.screenshot(path=str(Path(__file__).resolve().parent / "fragment_success.png"), full_page=True)
+            return {"ok": True, "message": f"Fragment success detected for @{username}, requested {stars} stars"}
+
+        await page.wait_for_timeout(2000)
+
+    await page.screenshot(path=str(Path(__file__).resolve().parent / "fragment_debug_after_confirm.png"), full_page=True)
+    if last_confirm_error:
+        return {"ok": False, "error": f"Не удалось подтвердить Tonkeeper: {last_confirm_error}"}
+    return {"ok": False, "error": "Подтверждение Tonkeeper не выполнено за отведённое время"}
 
 async def deliver_stars_to_user(username: str, stars: int) -> dict:
     state_path = Path(FRAGMENT_STATE_PATH)
@@ -148,31 +220,7 @@ async def deliver_stars_to_user(username: str, stars: int) -> dict:
                     await page.screenshot(path=str(Path(__file__).resolve().parent / "fragment_debug_confirm_missing.png"), full_page=True)
                     return {"ok": False, "error": "Не найдена кнопка подтверждения в модалке. Смотри fragment_debug_confirm_missing.png"}
 
-            page_text = ""
-            try:
-                page_text = await page.locator("body").inner_text(timeout=5000)
-            except Exception:
-                pass
-
-            success_markers = [
-                "success",
-                "completed",
-                "purchased",
-                "done",
-                "успешно",
-                "оплачено",
-                "завершено",
-                "sent a gift",
-                "gift for",
-                "transaction",
-            ]
-
-            if any(m in page_text.lower() for m in success_markers):
-                await page.screenshot(path=str(Path(__file__).resolve().parent / "fragment_success.png"), full_page=True)
-                return {"ok": True, "message": f"Fragment success detected for @{username}, requested {stars} stars"}
-
-            await page.screenshot(path=str(Path(__file__).resolve().parent / "fragment_debug_after_confirm.png"), full_page=True)
-            return {"ok": False, "error": "Подтверждение нажато, но success не найден. Смотри fragment_debug_after_confirm.png"}
+            return await _wait_for_fragment_success(page, username, stars)
 
         except PlaywrightTimeoutError as e:
             logger.exception("[Fragment] timeout")

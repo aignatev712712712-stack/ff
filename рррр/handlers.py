@@ -14,7 +14,8 @@ from config import ADMIN_IDS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, YOOKASSA_EN
 from database import (
     cursor, conn, get_user_balance, update_user_balance, add_purchase,
     get_purchase, update_purchase_status, try_lock_purchase, format_price,
-    get_price_per_star, calc_stars_cost, set_price_per_star
+    get_price_per_star, calc_stars_cost, set_price_per_star,
+    add_delivery_to_queue
 )
 from keyboards import (
     main_menu_keyboard, back_button, topup_amount_keyboard,
@@ -24,7 +25,6 @@ from states import (
     BuyStarsState, PromoState, AdminPriceState,
     AdminPromoState, TopupState, CalcState
 )
-from fragment_bot import deliver_stars_to_user
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -187,8 +187,8 @@ async def buy_with_balance(callback: CallbackQuery, state: FSMContext):
     purchase_id = add_purchase(user_id, stars, cost_kopecks, 'balance', 'paid')
     await check_referral_bonus(callback.bot, user_id, cost_kopecks)
 
-    fragment_done = False
-    fragment_error = None
+    delivery_queued = False
+    delivery_error = None
 
     if FRAGMENT_AUTO_DELIVERY:
         cursor.execute('SELECT username FROM users WHERE user_id = ?', (user_id,))
@@ -196,29 +196,26 @@ async def buy_with_balance(callback: CallbackQuery, state: FSMContext):
         username = urow[0] if urow else None
 
         if username:
-            try:
-                fragment_result = await deliver_stars_to_user(username=username, stars=stars)
-                fragment_done = bool(fragment_result.get("ok"))
-                if not fragment_done:
-                    fragment_error = fragment_result.get("error", "unknown error")
-            except Exception as e:
-                fragment_error = str(e)
+            queue_id = add_delivery_to_queue(purchase_id)
+            if queue_id:
+                delivery_queued = True
+            else:
+                delivery_error = "Не удалось поставить заказ в очередь"
         else:
-            fragment_error = "У пользователя нет @username"
+            delivery_error = "У пользователя нет @username"
 
-    if fragment_done:
-        update_purchase_status(purchase_id, 'completed', datetime.now())
+    if delivery_queued:
         await callback.message.edit_text(
             f"✅ Покупка завершена!\n\n"
             f"🛒 Заказ #{purchase_id}\n"
             f"⭐️ {stars} звёзд\n"
             f"💰 Стоимость: {format_price(cost_kopecks)} руб.\n\n"
-            f"🎉 Звёзды отправлены автоматически.",
+            f"⏳ Заказ поставлен в очередь на авто-выдачу.",
             parse_mode="HTML"
         )
     else:
-        if not fragment_error and not FRAGMENT_AUTO_DELIVERY:
-            fragment_error = "Автовыдача отключена"
+        if not delivery_error and not FRAGMENT_AUTO_DELIVERY:
+            delivery_error = "Автовыдача отключена"
 
         await callback.message.edit_text(
             f"✅ Покупка завершена!\n\n"
@@ -242,7 +239,7 @@ async def buy_with_balance(callback: CallbackQuery, state: FSMContext):
             f"💰 Сумма: {format_price(cost_kopecks)} руб.\n"
             f"📅 Время: {datetime.now().strftime('%H:%M %d.%m.%Y')}\n\n"
             f"⚠️ Автовыдача не сработала.\n"
-            f"Причина: {fragment_error or 'unknown'}\n\n"
+            f"Причина: {delivery_error or 'unknown'}\n\n"
             f"Выдайте пользователю {stars} звёзд, затем нажмите кнопку."
         )
 
@@ -417,8 +414,8 @@ async def check_payment(callback: CallbackQuery):
 
                 update_purchase_status(purchase_id, 'paid', datetime.now())
 
-                fragment_done = False
-                fragment_error = None
+                delivery_queued = False
+                delivery_error = None
 
                 if FRAGMENT_AUTO_DELIVERY:
                     cursor.execute('SELECT username FROM users WHERE user_id = ?', (user_id,))
@@ -426,27 +423,27 @@ async def check_payment(callback: CallbackQuery):
                     username = urow[0] if urow else None
 
                     if username:
-                        try:
-                            fragment_result = await deliver_stars_to_user(username=username, stars=stars)
-                            fragment_done = bool(fragment_result.get("ok"))
-                            if not fragment_done:
-                                fragment_error = fragment_result.get("error", "unknown error")
-                        except Exception as e:
-                            fragment_error = str(e)
+                        queue_id = add_delivery_to_queue(purchase_id)
+                        if queue_id:
+                            delivery_queued = True
+                        else:
+                            delivery_error = "Не удалось поставить заказ в очередь"
                     else:
-                        fragment_error = "У пользователя нет @username"
+                        delivery_error = "У пользователя нет @username"
 
-                if fragment_done:
-                    update_purchase_status(purchase_id, 'completed', datetime.now())
+                if delivery_queued:
                     await callback.message.edit_text(
                         f"✅ Оплата подтверждена!\n\n"
                         f"🛒 Заказ #{purchase_id}\n"
                         f"⭐️ {stars} звёзд\n"
                         f"💰 {format_price(amount_kopecks)} руб.\n\n"
-                        f"🎉 Звёзды отправлены автоматически.",
+                        f"⏳ Заказ поставлен в очередь на авто-выдачу.",
                         parse_mode="HTML"
                     )
                 else:
+                    if not delivery_error and not FRAGMENT_AUTO_DELIVERY:
+                        delivery_error = "Автовыдача отключена"
+
                     await callback.message.edit_text(
                         f"✅ Оплата подтверждена!\n\n"
                         f"🛒 Заказ #{purchase_id}\n"
@@ -469,7 +466,7 @@ async def check_payment(callback: CallbackQuery):
                         f"💰 Сумма: {format_price(amount_kopecks)} руб.\n"
                         f"📅 Время: {datetime.now().strftime('%H:%M %d.%m.%Y')}\n\n"
                         f"⚠️ Автовыдача не сработала.\n"
-                        f"Причина: {fragment_error or 'unknown'}\n\n"
+                        f"Причина: {delivery_error or 'unknown'}\n\n"
                         f"Выдайте пользователю {stars} звёзд, затем нажмите кнопку."
                     )
 

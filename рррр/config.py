@@ -28,3 +28,4 @@ if not YOOKASSA_ENABLED:
 FRAGMENT_STATE_PATH = (Path(__file__).resolve().parent / "fragment_state.json").as_posix()
 FRAGMENT_ORDER_TIMEOUT = int((os.getenv("FRAGMENT_ORDER_TIMEOUT") or "180").strip())
 FRAGMENT_AUTO_DELIVERY = (os.getenv("FRAGMENT_AUTO_DELIVERY") or "1").strip() == "1"
+TONKEEPER_AUTO_CONFIRM = (os.getenv("TONKEEPER_AUTO_CONFIRM") or "1").strip() == "1"
